@@ -1,0 +1,136 @@
+#define led1 12 //led 1 on d12 (red led)
+#define led2 13 //led 2 on d13 (green led)
+#define tiltPin 2 //tilt sensor pin on d2 
+#define pirPin  8 //pir sensor pin on d8
+#define sliderPin 9 // slider switch pin on d9
+#define buzzerPin 6 // buzzer pin on d6
+//volatile means variable can change anytime..
+//using this for flags bcz value of flag will change..
+//data type boolean
+volatile bool timerFlag = false;//flag for timer1 interrupt..initially false
+volatile bool pciFlag   = false;//flag for pin change interrupt(PIR)..initially false
+volatile bool tiltFlag  = false;//flag for tilt..initially false
+//system state indicators.. used to prevent repeated triggering
+volatile bool pirActive  = false;//piractive means PIR currently active
+volatile bool tiltActive = false;//tiltActive means tilt currently active
+//unsigned means only positive value and long - 4 bytes(32 bits)
+//used bcz millis() returns unsigned long.
+unsigned long pirStartTime = 0;//pirstarttime stores when PIR was triggered..
+bool lastSliderState = HIGH;//stores last state of slider and set to high for edge detection
+//timer interrupt - 
+ISR(TIMER1_COMPA_vect)//interrupt service routine..timer 1 compare matchA vector
+{
+  timerFlag = true;//setting timerFlag to true
+//only flags in ISR, no heavy line of code
+}
+//pin change interrupt - 
+ISR(PCINT0_vect)//port B, when pin in port B changes state, this triggers
+{
+    pciFlag = true;//setting flag to true
+}
+//external interrupt handler, used in attachinterrupt()
+void tiltISR()
+{
+    tiltFlag = true;//sets flag to true..
+}
+//runs once at start
+void setup()
+{
+    Serial.begin(9600);//starts serial communication - sending data one bit at a time, baud rate - 9600(9600 bits per second)
+
+    pinMode(led2, OUTPUT);//pinmode set to output because arduino sends data to LED and buzzer
+    pinMode(led1, OUTPUT);
+    pinMode(buzzerPin, OUTPUT);
+
+    pinMode(pirPin, INPUT);//pinmode set to input because arduino receives data from PIR, TILT sensor and slider switch.
+    pinMode(tiltPin, INPUT_PULLUP);
+    pinMode(sliderPin, INPUT);
+//attach external interrupt..digitalpintointerrupt(tiltpin) converts pin number to interrupt number
+    attachInterrupt(digitalPinToInterrupt(tiltPin), tiltISR, FALLING);//tiltISR is the function which is called and falling is mode that is
+// triggered when signal goes high to low.
+//pin change interrupt control register and |= is OR operator 
+    PCICR  |= 0b00000001;//enables port B.
+    PCMSK0 |= 0b00000001;//enables pin 8(D8) of port B.
+
+    noInterrupts();//disable interrupts during setup.(I-bit = 0) 
+//timer/counter1 control register
+    TCCR1A = 0;//timer/counter1 control register A reset to 0
+    TCCR1B = 0;//timer/counter1 control register B reset to 0
+    TCNT1  = 0;//timer/counter1 register - stores current count of timer1. set to 0 to reset the current's count
+
+    OCR1A = 15624;//output compare register 1A(timer1)(channel A)
+  	//OCR1A = (frequency of CPU/Prescaler X desired frequency) - 1..-1 as counting starts from 0
+//timer/counter1 control registerB, |= bitwise OR operator means dont change existing bits.
+    TCCR1B |= (1 << WGM12);//waveform generation mode.. in this 1 is being left shifted
+//by setting WGM12 the timer goes in CTC(clear timer on compare) mode.
+  //CS(Clock select - decides prescaler of timer)
+    TCCR1B |= (1 << CS12) | (1 << CS10);//CS12 means bit 2 and CS10 means bit 0. after left shifting and doing OR, 
+//value becomes - 00000101 where CS12 = 1 and CS10 = 1
+  // if CS12 = 1, CS11 = 0 and CS10 = 1, prescaler = 1024.
+    TIMSK1 |= (1 << OCIE1A);//timer interrupt mask register1 decides which timer interrupt to be enabled, if bit 1 - interrupt enable
+	//bit number of OCIE1A(output compare interrupt enable A) is 1, hence TIMSK1 set to 1, compare match A interrupt enabled.
+    interrupts();//enable interrupts now CPU accepts interrupts.(I-bit = 1)
+
+    Serial.println("System Started");//print system started
+}
+
+void loop()//main function
+{
+    if(timerFlag)//timer interrupt
+    {
+        digitalWrite(led2, !digitalRead(led2));//toggle the LED2
+
+        if(pirActive && (millis() - pirStartTime >= 5000))//if PIR is active and 5 seconds have passed
+        {
+            digitalWrite(led1, LOW);//turn off the LED
+            pirActive = false;//Mark PIR as inactive
+
+            Serial.println("PIR 5 sec completed");//PIR stays on exactly 5 seconds, print that
+        }
+
+        timerFlag = false;//reset it to false as it has been processed
+    }
+
+    if(pciFlag)//Pin change interrupt
+    {
+        if(digitalRead(pirPin) == HIGH && !tiltActive)//only react if PIRoutput is high means PIR detected motion and tilt is not currently active
+        {
+            Serial.println("PIR Triggered");
+
+            pirActive = true;//pir event is currently active
+            pirStartTime = millis();//store the current time
+
+            digitalWrite(led1, HIGH);//turn LED ON
+        }
+
+        pciFlag = false;//reset the flag
+    }
+
+    if(tiltFlag)//tilt motion detected
+    {
+        Serial.println("Tilt Triggered");
+
+        tiltActive = true;//tilt condition is active and system enters intrusion mode..
+
+        digitalWrite(led1, HIGH);//LED 1 turns on
+        digitalWrite(buzzerPin, HIGH);// buzzer turns ON
+
+        tiltFlag = false;//reset the flag
+    }
+
+    bool currentSliderState = digitalRead(sliderPin);//checks what the slider is doing
+
+    if(currentSliderState == LOW && lastSliderState == HIGH)//checks if the signal has changed from HIGH to LOW means falling edge detection.
+    {
+        digitalWrite(buzzerPin, LOW);//turn off the buzzer
+        digitalWrite(led1, LOW);//turns off the led
+
+        pirActive  = false;//motion event cleared
+        tiltActive = false;//intrusion event cleared
+      //system returns to idle state
+
+        Serial.println("Slider OFF --> System Reset");
+    }
+
+    lastSliderState = currentSliderState;//stores current state as previous state for the next comparison.
+}
